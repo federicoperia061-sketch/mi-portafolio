@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { supabase } from './supabase'
 import { usePortfolio } from './hooks/usePortfolio'
 import { lookupCedear, CD } from './utils/cedears'
-import { fetchCandles, fetchGeneralNews, fetchCompanyNews } from './utils/finnhub'
+import { fetchCandles, fetchGeneralNews, fetchCompanyNews, fetchAnalystData } from './utils/finnhub'
 import { analyze } from './utils/analysis'
 import { fu, fp, AT, SECTORS, DBG, CBG, BDR, T1, T2, T3, GRN, RED, BLU, AMB, PUR, M, PAL, cs, ls, is } from './utils/format'
 import ExcelJS from 'exceljs'
@@ -542,13 +542,168 @@ function ConfigPanel({ cfg, onCfg }) {
   </div>
 }
 
+/* ========== WHAT-IF SIMULATOR ========== */
+function Simulator({ holdings, cfg }) {
+  const [selectedId, setSelectedId] = useState(holdings[0]?.id || '')
+  const [action, setAction] = useState('buy')
+  const [mode, setMode] = useState('amount') // 'amount' or 'shares'
+  const [amount, setAmount] = useState('')
+  const [analystData, setAnalystData] = useState(null)
+  const [anLoading, setAnLoading] = useState(false)
+
+  const selected = holdings.find(h => h.id === selectedId)
+  const priced = holdings.filter(x => x.current_price)
+  const totalValNow = priced.reduce((s, x) => s + x.shares * x.current_price, 0)
+
+  async function loadAnalyst() {
+    if (!selected || !cfg.finnhub_key) return
+    const usTicker = selected.cedear_us || selected.ticker
+    setAnLoading(true)
+    const data = await fetchAnalystData(usTicker, cfg.finnhub_key)
+    setAnalystData(data)
+    setAnLoading(false)
+  }
+
+  useEffect(() => { setAnalystData(null) }, [selectedId])
+
+  if (!holdings.length) return <div style={{ ...cs, borderRadius: 14, padding: '48px 24px', textAlign: 'center', color: T3 }}>Cargá posiciones primero</div>
+  if (!selected) return null
+
+  const isCed = selected.type === 'cedear' && selected.cedear_ratio
+  const price = selected.current_price || selected.avg_cost
+
+  // Calculate simulated shares delta
+  let sharesDelta = 0
+  if (mode === 'amount' && amount) {
+    sharesDelta = (+amount) / price
+  } else if (mode === 'shares' && amount) {
+    sharesDelta = +amount
+  }
+  if (action === 'sell') sharesDelta = -sharesDelta
+
+  const newShares = Math.max(0, selected.shares + sharesDelta)
+  const capitalDelta = sharesDelta * price
+
+  // Before
+  const beforeValue = selected.shares * price
+  const beforeCost = selected.shares * selected.avg_cost
+  const beforePnl = selected.type !== 'cash' ? beforeValue - beforeCost : 0
+  const beforeWeight = totalValNow > 0 ? (beforeValue / totalValNow) * 100 : 0
+
+  // After
+  const newCost = action === 'buy'
+    ? (selected.shares * selected.avg_cost + Math.abs(capitalDelta)) / (newShares || 1)
+    : selected.avg_cost // selling doesn't change avg cost
+  const afterValue = newShares * price
+  const afterCost = newShares * newCost
+  const afterPnl = selected.type !== 'cash' ? afterValue - afterCost : 0
+  const newTotalVal = totalValNow - beforeValue + afterValue
+  const afterWeight = newTotalVal > 0 ? (afterValue / newTotalVal) * 100 : 0
+
+  // Portfolio-level before/after
+  let portBeforeCost = 0, portBeforePnl = 0
+  priced.forEach(x => { portBeforeCost += x.shares * x.avg_cost; portBeforePnl += x.type !== 'cash' ? (x.current_price - x.avg_cost) * x.shares : 0 })
+  const portBeforeCapital = totalValNow - portBeforePnl
+  const portBeforeRend = portBeforeCapital > 0 ? (portBeforePnl / portBeforeCapital) * 100 : 0
+
+  const portAfterCost = portBeforeCost - beforeCost + afterCost
+  const portAfterPnl = portBeforePnl - beforePnl + afterPnl
+  const portAfterCapital = newTotalVal - portAfterPnl
+  const portAfterRend = portAfterCapital > 0 ? (portAfterPnl / portAfterCapital) * 100 : 0
+
+  const target = analystData?.target
+  const recs = analystData?.recs
+  const upside = target && price ? ((target.targetMean / price) - 1) * 100 : null
+
+  return <div>
+    <div style={{ ...cs, borderRadius: 14, padding: 20, marginBottom: 20 }}>
+      <h3 style={{ color: T1, margin: '0 0 16px', fontSize: 14, fontWeight: 600 }}>🔮 Simulador "¿Qué pasa si...?"</h3>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit,minmax(150px,1fr))', gap: 14 }}>
+        <div><label style={ls}>Activo</label><select style={{ ...is, cursor: 'pointer' }} value={selectedId} onChange={e => setSelectedId(e.target.value)}>{holdings.map(h => <option key={h.id} value={h.id}>{h.ticker}</option>)}</select></div>
+        <div><label style={ls}>Acción</label><select style={{ ...is, cursor: 'pointer' }} value={action} onChange={e => setAction(e.target.value)}><option value="buy">Comprar más</option><option value="sell">Vender</option></select></div>
+        <div><label style={ls}>Unidad</label><select style={{ ...is, cursor: 'pointer' }} value={mode} onChange={e => setMode(e.target.value)}><option value="amount">Monto (USD)</option><option value="shares">Cantidad</option></select></div>
+        <div><label style={ls}>{mode === 'amount' ? 'Monto (USD)' : 'Cantidad'}</label><input style={is} type="number" step="any" placeholder={mode === 'amount' ? '1000' : '10'} value={amount} onChange={e => setAmount(e.target.value)} /></div>
+      </div>
+    </div>
+
+    {amount && +amount > 0 && <>
+      {/* Before/After for this asset */}
+      <div style={{ ...cs, borderRadius: 14, padding: 20, marginBottom: 20 }}>
+        <h4 style={{ color: T1, margin: '0 0 14px', fontSize: 13, fontWeight: 600 }}>{selected.ticker} — Antes / Después</h4>
+        <div style={{ overflowX: 'auto' }}>
+          <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 13 }}>
+            <thead><tr style={{ borderBottom: '1px solid ' + BDR }}>
+              <th style={{ padding: '8px 12px', textAlign: 'left', color: T3, fontSize: 10, fontFamily: M }}></th>
+              <th style={{ padding: '8px 12px', textAlign: 'right', color: T3, fontSize: 10, fontFamily: M, textTransform: 'uppercase' }}>Antes</th>
+              <th style={{ padding: '8px 12px', textAlign: 'right', color: GRN, fontSize: 10, fontFamily: M, textTransform: 'uppercase' }}>Después</th>
+            </tr></thead>
+            <tbody>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,.04)' }}><td style={{ padding: '10px 12px', color: T2 }}>Cantidad</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1 }}>{selected.shares.toFixed(4)}</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1, fontWeight: 700 }}>{newShares.toFixed(4)}</td></tr>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,.04)' }}><td style={{ padding: '10px 12px', color: T2 }}>PPC</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1 }}>{fu(selected.avg_cost)}</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1, fontWeight: 700 }}>{fu(newCost)}</td></tr>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,.04)' }}><td style={{ padding: '10px 12px', color: T2 }}>Valor</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1 }}>{fu(beforeValue)}</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1, fontWeight: 700 }}>{fu(afterValue)}</td></tr>
+              <tr style={{ borderBottom: '1px solid rgba(255,255,255,.04)' }}><td style={{ padding: '10px 12px', color: T2 }}>P&L</td><td style={{ padding: '10px 12px', textAlign: 'right' }}><PnL v={beforePnl} /></td><td style={{ padding: '10px 12px', textAlign: 'right' }}><PnL v={afterPnl} s={{ fontWeight: 700 }} /></td></tr>
+              <tr><td style={{ padding: '10px 12px', color: T2 }}>Peso en cartera</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1 }}>{beforeWeight.toFixed(1)}%</td><td style={{ padding: '10px 12px', textAlign: 'right', fontFamily: M, color: T1, fontWeight: 700 }}>{afterWeight.toFixed(1)}%</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {/* Portfolio-level impact */}
+      <div style={{ ...cs, borderRadius: 14, padding: 20, marginBottom: 20 }}>
+        <h4 style={{ color: T1, margin: '0 0 14px', fontSize: 13, fontWeight: 600 }}>Impacto en la cartera completa</h4>
+        <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+          <div style={{ flex: '1 1 200px', textAlign: 'center', padding: 16, background: 'rgba(255,255,255,.02)', borderRadius: 10 }}>
+            <div style={{ fontSize: 10, color: T3, textTransform: 'uppercase', marginBottom: 6 }}>Rendimiento actual</div>
+            <div style={{ fontSize: 24, fontWeight: 700, fontFamily: M, color: portBeforeRend >= 0 ? GRN : RED }}>{fp(portBeforeRend)}</div>
+          </div>
+          <div style={{ display: 'flex', alignItems: 'center', fontSize: 20, color: T3 }}>→</div>
+          <div style={{ flex: '1 1 200px', textAlign: 'center', padding: 16, background: 'rgba(0,230,118,.04)', borderRadius: 10, border: '1px solid rgba(0,230,118,.15)' }}>
+            <div style={{ fontSize: 10, color: T3, textTransform: 'uppercase', marginBottom: 6 }}>Rendimiento simulado</div>
+            <div style={{ fontSize: 24, fontWeight: 700, fontFamily: M, color: portAfterRend >= 0 ? GRN : RED }}>{fp(portAfterRend)}</div>
+          </div>
+        </div>
+        <div style={{ fontSize: 11, color: T3, marginTop: 12, textAlign: 'center' }}>
+          Capital {action === 'buy' ? 'adicional' : 'liberado'}: <strong style={{ color: T1 }}>{fu(Math.abs(capitalDelta))}</strong>
+        </div>
+      </div>
+    </>}
+
+    {/* Analyst forecasts */}
+    <div style={{ ...cs, borderRadius: 14, padding: 20 }}>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
+        <h4 style={{ color: T1, margin: 0, fontSize: 13, fontWeight: 600 }}>📊 Previsión de analistas — {selected.ticker}</h4>
+        <button onClick={loadAnalyst} disabled={anLoading || !cfg.finnhub_key} style={{ background: 'transparent', border: '1px solid rgba(68,138,255,.3)', borderRadius: 6, color: anLoading ? T3 : BLU, padding: '6px 12px', fontSize: 11, cursor: anLoading ? 'wait' : 'pointer', fontFamily: M }}>{anLoading ? 'Cargando...' : '⟳ Consultar'}</button>
+      </div>
+      {!cfg.finnhub_key && <div style={{ fontSize: 11, color: AMB }}>Necesitás Finnhub API Key en ⚙️ Config</div>}
+      {analystData && (target || recs) ? <div style={{ display: 'flex', gap: 20, flexWrap: 'wrap' }}>
+        {target && <div style={{ flex: '1 1 220px', padding: 16, background: 'rgba(68,138,255,.04)', borderRadius: 10, border: '1px solid rgba(68,138,255,.15)' }}>
+          <div style={{ fontSize: 10, color: T3, textTransform: 'uppercase', marginBottom: 8 }}>Precio objetivo promedio</div>
+          <div style={{ fontSize: 26, fontWeight: 700, fontFamily: M, color: T1 }}>{fu(target.targetMean)}</div>
+          {upside != null && <div style={{ fontSize: 13, color: upside >= 0 ? GRN : RED, fontFamily: M, marginTop: 4 }}>{upside >= 0 ? '+' : ''}{upside.toFixed(1)}% vs precio actual ({fu(price)})</div>}
+          <div style={{ fontSize: 10, color: T3, marginTop: 10 }}>Rango: {fu(target.targetLow)} — {fu(target.targetHigh)}</div>
+        </div>}
+        {recs && recs.total > 0 && <div style={{ flex: '1 1 220px', padding: 16, background: 'rgba(0,230,118,.04)', borderRadius: 10, border: '1px solid rgba(0,230,118,.15)' }}>
+          <div style={{ fontSize: 10, color: T3, textTransform: 'uppercase', marginBottom: 8 }}>Consenso analistas ({recs.total})</div>
+          <div style={{ fontSize: 20, fontWeight: 700, fontFamily: M, color: recs.bullishPct >= 60 ? GRN : recs.bullishPct >= 40 ? AMB : RED }}>{recs.bullishPct >= 60 ? '🟢 BUY' : recs.bullishPct >= 40 ? '🟡 HOLD' : '🔴 SELL'}</div>
+          <div style={{ fontSize: 11, color: T2, marginTop: 8, lineHeight: 1.6 }}>
+            <div>Strong Buy: {recs.strongBuy} · Buy: {recs.buy}</div>
+            <div>Hold: {recs.hold}</div>
+            <div>Sell: {recs.sell} · Strong Sell: {recs.strongSell}</div>
+          </div>
+        </div>}
+      </div> : (!anLoading && <div style={{ color: T3, textAlign: 'center', padding: 20, fontSize: 11 }}>Tocá "Consultar" para ver previsiones de analistas</div>)}
+    </div>
+  </div>
+}
+
+
 function Dashboard({ user }) {
   const { holdings: h, snapshots: snaps, config: cfg, loading, fetching, lastUpdate: lastUpd, msg, addHolding: addH, deleteHolding: delH, editHolding: editH, fetchAllPrices: fetchAll, saveConfig: sCfg } = usePortfolio(user)
   const [tab, setTab] = useState('portfolio')
   const [showAdd, sSA] = useState(false)
 
   const wp = h.filter(x => x.current_price)
-  const tabs = [{ k: 'portfolio', l: 'Posiciones' }, { k: 'performance', l: 'Rendimiento' }, { k: 'config', l: '⚙️ Config' }]
+  const tabs = [{ k: 'portfolio', l: 'Posiciones' }, { k: 'performance', l: 'Rendimiento' }, { k: 'simulator', l: '🔮 Simulador' }, { k: 'config', l: '⚙️ Config' }]
 
   // Auto-refresh every 1 hour
   useEffect(() => {
@@ -588,6 +743,7 @@ function Dashboard({ user }) {
         </div>
       </div>}
       {tab === 'performance' && <PP holdings={h} snaps={snaps} cfg={cfg} />}
+      {tab === 'simulator' && <Simulator holdings={h} cfg={cfg} />}
       {tab === 'config' && <ConfigPanel cfg={cfg} onCfg={sCfg} />}
       <div style={{ marginTop: 32, padding: '16px 0', borderTop: '1px solid ' + BDR, fontSize: 11, color: T3, fontFamily: M, textAlign: 'center' }}>
         Privado · {Object.keys(CD).length}+ CEDEARs · Finnhub · {user.email} · <span style={{ cursor: 'pointer', color: BLU }} onClick={() => supabase.auth.signOut()}>Cerrar sesión</span>

@@ -66,6 +66,54 @@ export async function fetchGeneralNews(apiKey) {
   } catch (e) { return [] }
 }
 
+export async function fetchPriceTarget(ticker, apiKey) {
+  if (!apiKey || !ticker) return null
+  try {
+    const res = await fetch(`https://finnhub.io/api/v1/stock/price-target?symbol=${encodeURIComponent(ticker)}&token=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(8000) })
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data || !data.targetMean) return null
+    return {
+      targetHigh: data.targetHigh,
+      targetLow: data.targetLow,
+      targetMean: data.targetMean,
+      targetMedian: data.targetMedian,
+      lastUpdated: data.lastUpdated
+    }
+  } catch (e) { return null }
+}
+
+export async function fetchRecommendationTrends(ticker, apiKey) {
+  if (!apiKey || !ticker) return null
+  try {
+    const res = await fetch(`https://finnhub.io/api/v1/stock/recommendation?symbol=${encodeURIComponent(ticker)}&token=${encodeURIComponent(apiKey)}`, { signal: AbortSignal.timeout(8000) })
+    if (!res.ok) return null
+    const data = await res.json()
+    if (!data || !data.length) return null
+    // Most recent period first
+    const latest = data[0]
+    const total = latest.strongBuy + latest.buy + latest.hold + latest.sell + latest.strongSell
+    return {
+      period: latest.period,
+      strongBuy: latest.strongBuy,
+      buy: latest.buy,
+      hold: latest.hold,
+      sell: latest.sell,
+      strongSell: latest.strongSell,
+      total,
+      bullishPct: total > 0 ? ((latest.strongBuy + latest.buy) / total) * 100 : 0
+    }
+  } catch (e) { return null }
+}
+
+export async function fetchAnalystData(ticker, apiKey) {
+  const [target, recs] = await Promise.all([
+    fetchPriceTarget(ticker, apiKey),
+    fetchRecommendationTrends(ticker, apiKey)
+  ])
+  return { target, recs }
+}
+
 export async function fetchCompanyNews(ticker, apiKey) {
   if (!apiKey || !ticker) return []
   try {
