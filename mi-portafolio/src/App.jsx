@@ -333,7 +333,7 @@ function WP({ h }) {
   const byTicker = wv.map((x, i) => ({ name: x.ticker, value: x.shares * x.avg_cost, pct: tc > 0 ? (x.shares * x.avg_cost / tc) * 100 : 0, color: PAL[i % PAL.length] })).sort((a, b) => b.value - a.value)
   const sectorMap = {}
   wv.forEach(x => { const s = x.type === 'cash' ? 'Cash' : x.sector; sectorMap[s] = (sectorMap[s] || 0) + x.shares * x.avg_cost })
-  const bySector = Object.entries(sectorMap).map(([k, v], i) => ({ name: k, value: v, pct: tc > 0 ? (v / tc) * 100 : 0, color: PAL[(i + 5) % PAL.length] })).sort((a, b) => b.value - a.value)(v / tv) * 100, color: PAL[(i + 5) % PAL.length] })).sort((a, b) => b.value - a.value)
+  const bySector = Object.entries(sectorMap).map(([k, v], i) => ({ name: k, value: v, pct: tc > 0 ? (v / tc) * 100 : 0, color: PAL[(i + 5) %% PAL.length] })).sort((a, b) => b.value - a.value)
   function legend(data) { return data.map((d, i) => <div key={i} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}><div style={{ width: 8, height: 8, borderRadius: 2, background: d.color, flexShrink: 0 }} /><span style={{ color: T1, fontFamily: M, fontSize: 11, fontWeight: 600, flex: 1 }}>{d.name}</span><span style={{ color: T2, fontFamily: M, fontSize: 11 }}>{d.pct.toFixed(1)}%</span></div>) }
   return <div style={{ ...cs, borderRadius: 14, padding: 20 }}><div style={{ display: 'flex', gap: 24, flexWrap: 'wrap' }}>
     <div style={{ flex: '1 1 280px', minWidth: 240 }}><h4 style={{ color: T1, margin: '0 0 12px', fontSize: 13, fontWeight: 600 }}>Ponderación por activo</h4><div style={{ display: 'flex', alignItems: 'center', gap: 16 }}><Donut data={byTicker} /><div style={{ flex: 1, minWidth: 120 }}>{legend(byTicker)}</div></div></div>
